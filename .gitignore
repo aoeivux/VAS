@@ -1,0 +1,22 @@
+# 保留3rdparty文件夹，但忽略其中的所有文件
+3rdparty/*
+
+# 保留x64文件夹，但忽略其中的所有文件
+x64
+
+*.mp4
+3rdparty
+Analyzer_linux_lib/*
+
+
+MediaServer
+
+*.docx
+
+*.sqlite3
+
+models
+
+static/
+
+__pycache__/
