@@ -1,214 +1,274 @@
 ﻿#include "Analyzer.h"
-#include "Algorithm.h"
+#include <opencv2/opencv.hpp>
 #include <json/json.h>
+#include "Utils/Request.h"
+#include "Utils/Log.h"
+#include "Utils/Common.h"
+#include "Utils/Base64.h"
 #include "Scheduler.h"
 #include "Config.h"
 #include "Control.h"
-#include "Utils/Log.h"
-#include "Utils/Common.h"
-#include "Utils/Request.h"
-#include "Utils/Base64.h"
-#include "Utils/CalcuIOU.h"
+
+#ifndef WIN32
+#include <opencv2/opencv.hpp>
+#else
+#ifndef _DEBUG
+#include <turbojpeg.h>
+#else
+#include <opencv2/opencv.hpp>
+#endif
+#endif
 
 namespace AVSAnalyzer {
+
+    static bool analy_turboJpeg_compress(int height, int width, int channels, unsigned char* bgr, unsigned char*& out_data, unsigned long* out_size) {
+#ifdef WIN32
+#ifndef _DEBUG
+
+        tjhandle handle = tjInitCompress();
+        if (nullptr == handle) {
+            return false;
+        }
+
+        //pixel_format : TJPF::TJPF_BGR or other
+        const int JPEG_QUALITY = 75;
+        int pixel_format = TJPF::TJPF_BGR;
+        int pitch = tjPixelSize[pixel_format] * width;
+        int ret = tjCompress2(handle, bgr, width, pitch, height, pixel_format,
+            &out_data, out_size, TJSAMP_444, JPEG_QUALITY, TJFLAG_FASTDCT);
+
+        tjDestroy(handle);
+
+        if (ret != 0) {
+            return false;
+        }
+        return true;
+#endif // !_DEBUG
+#endif
+
+        return false;
+    }
+
+    static bool analy_compressBgrAndEncodeBase64(int height, int width, int channels, unsigned char* bgr, std::string& out_base64) {
+
+#ifdef WIN32
+#ifndef _DEBUG
+        unsigned char* jpeg_data = nullptr;
+        unsigned long  jpeg_size = 0;
+
+        analy_turboJpeg_compress(height, width, channels, bgr, jpeg_data, &jpeg_size);
+
+        if (jpeg_size > 0 && jpeg_data != nullptr) {
+
+            Base64Encode(jpeg_data, jpeg_size, out_base64);
+
+            free(jpeg_data);
+            jpeg_data = nullptr;
+
+            return true;
+        }
+        else {
+            return false;
+        }
+
+
+#else
+        cv::Mat bgr_image(height, width, CV_8UC3, bgr);
+
+        std::vector<int> quality = { 100 };
+        std::vector<uchar> jpeg_data;
+        cv::imencode(".jpg", bgr_image, jpeg_data, quality);
+
+        Base64Encode(jpeg_data.data(), jpeg_data.size(), out_base64);
+
+        return true;
+
+
+#endif // !_DEBUG
+#endif //WIN32
+    }
+
+    AlgorithmWithApi::AlgorithmWithApi(Config* config):mConfig(config)
+    {
+        LOGI("");
+    }
+
+    AlgorithmWithApi::~AlgorithmWithApi()
+    {
+        LOGI("");
+    }
+    bool AlgorithmWithApi::test() {
+        std::string response;
+        int randIndex = rand() % mConfig->algorithmApiHosts.size();
+        std::string host = mConfig->algorithmApiHosts[randIndex];
+        std::string url = host + "/image/objectDetect";
+
+        Request request;
+        bool ret = request.get(url.data(), response);
+
+        //LOGI("ret=%d,response=%s",ret,response.data());
+        return ret;
+
+    }
+
+    bool AlgorithmWithApi::objectDetect(int height, int width, unsigned char* bgr, std::vector<AlgorithmDetectObject>& detects) {
+        cv::Mat image(height, width, CV_8UC3, bgr);
+
+        int64_t t1 = getCurTime();
+        std::string imageBase64;
+        analy_compressBgrAndEncodeBase64(image.rows, image.cols, 3, image.data, imageBase64);
+        int64_t t2 = getCurTime();
+
+        int randIndex = rand() % mConfig->algorithmApiHosts.size();
+        std::string host = mConfig->algorithmApiHosts[randIndex];
+        std::string url = host+"/image/objectDetect";
+
+        Json::Value param;
+        param["appKey"] = "s84dsd#7hf34r3jsk@fs$d#$dd";
+        param["algorithm"] = "openvino_yolov5";
+        param["image_base64"] = imageBase64;
+        std::string data = param.toStyledString();
+        param = NULL;
+
+        int64_t t3 = getCurTime();
+        Request request;
+        std::string response;
+        bool result = request.post(url.data(), data.data(), response);
+        int64_t t4 = getCurTime();
+
+        if (result) {
+            result = this->parseObjectDetect(response, detects);
+        }
+
+        //LOGI("serialize spend: %lld(ms),call api spend: %lld(ms)", (t2 - t1), (t4 - t3));
+
+        return result;
+    }
+    bool AlgorithmWithApi::parseObjectDetect(std::string& response, std::vector<AlgorithmDetectObject>& detects) {
+
+        Json::CharReaderBuilder builder;
+        const std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
+
+        //Json::CharReaderBuilder b;
+        //Json::CharReader* reader(b.newCharReader());
+
+        Json::Value root;
+        JSONCPP_STRING errs;
+
+        bool result = false;
+
+        if (reader->parse(response.data(), response.data() + std::strlen(response.data()),
+            &root, &errs) && errs.empty()) {
+
+
+            if (root["code"].isInt()) {
+                int code = root["code"].asInt();
+                std::string msg = root["msg"].asString();
+
+                if (code == 1000) {
+                    Json::Value root_result = root["result"];
+                    int detect_num = root_result["detect_num"].asInt();
+                    Json::Value detect_data = root_result["detect_data"];
+
+                    for (auto i : detect_data) {
+                        AlgorithmDetectObject object;
+
+                        Json::Value loc = i["location"];
+                        object.x1 = loc["x1"].asInt();
+                        object.y1 = loc["y1"].asInt();
+                        object.x2 = loc["x2"].asInt();
+                        object.y2 = loc["y2"].asInt();
+                        object.score = i["score"].asFloat();
+                        object.class_name = i["class_name"].asString();
+
+                        detects.push_back(object);
+
+                    }
+                    result = true;
+                }
+            }
+
+
+        }
+
+        root = NULL;
+        //delete reader;
+        //reader = NULL;
+
+        return result;
+    }
+
 
     Analyzer::Analyzer(Scheduler* scheduler, Control* control) :
         mScheduler(scheduler),
         mControl(control)
     {
-  
+        mAlgorithm = new AlgorithmWithApi(scheduler->getConfig());
     }
 
     Analyzer::~Analyzer()
     {
-
+        if (mAlgorithm) {
+            delete mAlgorithm;
+            mAlgorithm = nullptr;
+        }
+        mDetects.clear();
 
     }
 
-    bool Analyzer::handleVideoFrame(int64_t frameCount, cv::Mat& image, std::vector<DetectObject>& happenDetects, bool& happen, float& happenScore) {
-        if (mControl->algorithmCode == "onnxruntime_yolo8") {
-            //v3.41新增onnxruntime推理yolo8
-            Algorithm* algorithm = mScheduler->gainAlgorithm();
-            if (algorithm) {
-                //推理onnxruntime_yolo8
-                happenDetects.clear();
-                happen = false;
-                happenScore = 0;
-                algorithm->objectDetect(image, happenDetects);
+    bool Analyzer::checkVideoFrame(bool check, int64_t frameCount, unsigned char* data, float& happenScore) {
+        bool happen = false;
 
-                mScheduler->giveBackAlgorithm(algorithm);
+        cv::Mat image(mControl->videoHeight, mControl->videoWidth, CV_8UC3, data);
+        //cv::Mat image = cv::imread("D:\\file\\data\\images\\1.jpg");
+        //cv::imshow("image", image);
+        //cv::waitKey(0);
+        //cv::destroyAllWindows();
 
+        //int target_width = 300;
+        //int target_height = 200;
+        //int target_left = (mWidth - target_width) / 2;
+        //int target_top = (mHeight - target_height) / 2;
+
+        //cv::rectangle(image,cv::Rect(target_left,target_top,target_width,target_height),
+        //              cv::Scalar(0,255,0),3
+        //        ,cv::LINE_8,0);
+
+        if (check) {
+            mDetects.clear();
+            mAlgorithm->objectDetect(mControl->videoHeight, mControl->videoWidth, data, mDetects);
+
+            //当检测到视频中有两个人的时候，认为发生了危险行为
+            if (mDetects.size() == 2) {
+                //LOGI("当前帧发现了危险行为");
+                happen = true;
+                happenScore = 0.9;
             }
 
-            if(!happenDetects.empty()){
-
-                cv::polylines(image, mControl->recognitionRegion_points, mControl->recognitionRegion_points.size(), cv::Scalar(0, 0, 255), 4, 8);//绘制多边形
-                int x1, y1, x2, y2;
-                int matchCount = 0;
-                for (int i = 0; i < happenDetects.size(); i++)
-                {
-                    x1 = happenDetects[i].x1;
-                    y1 = happenDetects[i].y1;
-                    x2 = happenDetects[i].x2;
-                    y2 = happenDetects[i].y2;
-
-                    std::vector<double> object_d;
-                    object_d.push_back(x1);
-                    object_d.push_back(y1);
-
-                    object_d.push_back(x2);
-                    object_d.push_back(y1);
-
-                    object_d.push_back(x2);
-                    object_d.push_back(y2);
-
-                    object_d.push_back(x1);
-                    object_d.push_back(y2);
-
-
-                    double iou = CalcuPolygonIOU(mControl->recognitionRegion_d, object_d);
-
-                    if (iou >= 0.5) {
-                        int class_id = happenDetects[i].class_id;
-                        std::string class_name = "e";
-                        if (class_id < mControl->objects_v1_len) {
-                            class_name = mControl->objects_v1[class_id];
-                        }
-                        else {
-                            LOGE("算法分类数量不正确");
-                        }
-
-                        happenDetects[i].class_name = class_name;
-                        float class_score = happenDetects[i].score;
-                        if (class_name == mControl->objectCode) {
-                            ++matchCount;
-                        }
-                    }
-                }
-                if (matchCount > 0) {//匹配数据大于0，则认为发生了报警事件
-                    happen = true;
-                    happenScore = 1.0;
-                }
-
-            }
-
-            return true;
         }
-        else if (mControl->algorithmCode == "API") {
-            //v3.40新增，调用API类型的算法服务
-            return this->postImage2Server(frameCount, image,happenDetects,happen,happenScore);
+        int x1, y1, x2, y2;
+        for (int i = 0; i < mDetects.size(); i++)
+        {
+            x1 = mDetects[i].x1;
+            y1 = mDetects[i].y1;
+            x2 = mDetects[i].x2;
+            y2 = mDetects[i].y2;
+            cv::rectangle(image, cv::Rect(x1, y1, (x2 - x1), (y2 - y1)), cv::Scalar(0, 255, 0), 2, cv::LINE_8, 0);
+
+            std::string class_name = mDetects[i].class_name + "-" + std::to_string(mDetects[i].score);
+            cv::putText(image, class_name, cv::Point(x1, y1 + 15), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
 
         }
-        else if (mControl->algorithmCode == "DLIB_FACE") {
-            //v3.40新增，基于dlib的人脸检测
-            //v4.41移除，因为v3.41需要在rk3588等硬件编译，如果不去除还需要编译dlib，比较麻烦
-            LOGE("该算法仅在v3.40版本支持：%s", mControl->algorithmCode.data());
-            return false;
-        }
-        else {
-            LOGE("不支持的算法：%s",mControl->algorithmCode.data());
-            return false;
-        }
+        std::string info = "checkFps:" + std::to_string(mControl->checkFps);
+        cv::putText(image, info, cv::Point(20, 40), cv::FONT_HERSHEY_COMPLEX, mControl->videoWidth / 1000, cv::Scalar(0, 0, 255), 1, cv::LINE_AA);
+
+        return happen;
+
+    }
+    bool Analyzer::checkAudioFrame(bool check, int64_t frameCount, unsigned char* data, int size) {
 
         return false;
-
     }
-    bool Analyzer::postImage2Server(int64_t frameCount, cv::Mat& image, std::vector<DetectObject>& happenDetects, bool& happen, float& happenScore) {
 
-        Config* config = mScheduler->getConfig();
-        int height = mControl->videoHeight;
-        int width = mControl->videoWidth;
-
-        std::vector<int> JPEG_QUALITY = { 75 };
-        std::vector<uchar> jpg;
-        cv::imencode(".jpg", image, jpg, JPEG_QUALITY);
-        int JPGBufSize = jpg.size();
-
-
-        if (JPGBufSize > 0) {
-            Base64 base64;
-            std::string imageBase64;
-            base64.encode(jpg.data(), JPGBufSize, imageBase64);
-
-            std::string response;
-            Json::Value param;
-            param["image_base64"] = imageBase64;
-
-            param["code"] = mControl->code;//布控编号
-            param["objectCode"] = mControl->objectCode;
-            param["objects"] = mControl->objects;
-            param["recognitionRegion"] = mControl->recognitionRegion;
-            param["min_interval"] = mControl->minInterval;
-
-            std::string data = param.toStyledString();
-            //int64_t t1 = Common::getCurTimestamp();
-            Request request;
-            if (request.post(config->algorithmApiUrl.data(), data.data(), response)) {
-                Json::CharReaderBuilder builder;
-                const std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
-
-                Json::Value root;
-                JSONCPP_STRING errs;
-
-                if (reader->parse(response.data(), response.data() + std::strlen(response.data()),
-                    &root, &errs) && errs.empty()) {
-
-                    if (root["code"].isInt() && root["msg"].isString()) {
-                        int code = root["code"].asInt();
-                        std::string msg = root["msg"].asCString();
-
-                        if (1000 == code) {
-                            happenDetects.clear();
-                            happen = false;
-                            happenScore = 0.0;
-
-                            Json::Value result = root["result"];
-                            if (result["happen"].isBool() && result["happenScore"].isDouble()) {
-                                happen = result["happen"].asBool();
-                                happenScore = result["happenScore"].asFloat();
-
-                                Json::Value result_detects = result["detects"];
-                                for (auto i : result_detects) {
-
-                                    int x1 = i["x1"].asInt();
-                                    int y1 = i["y1"].asInt();
-                                    int x2 = i["x2"].asInt();
-                                    int y2 = i["y2"].asInt();
-                                    float class_score = i["class_score"].asFloat();
-                                    std::string class_name = i["class_name"].asString();
-
-                                    DetectObject detect;
-                                    detect.x1 = x1;
-                                    detect.y1 = y1;
-                                    detect.x2 = x2;
-                                    detect.y2 = y2;
-                                    detect.class_name = class_name;
-                                    detect.score = class_score;
-
-                                    happenDetects.push_back(detect);
-                                }
-                            }
-                        }
-                        else {
-                            LOGE("code=%d,msg=%s", code, msg.data());
-                        }
-
-                    }
-                    else {
-                        LOGE("incorrect return parameter format");
-                    }
-                }
-            }
-            else {
-                happenDetects.clear();
-                happen = false;
-                happenScore = 0.0;
-            }
-            //int64_t t2 = Common::getCurTimestamp();
-        
-        }
-
-        return true;
-    }
 
 }

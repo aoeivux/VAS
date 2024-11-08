@@ -53,13 +53,13 @@ def buildPageLabels(page,page_num):
     for p in pageArray:
         if p <= page_num:
             if page==p:
-                cur = 1
+                cur = True
             else:
-                cur = 0
+                cur = False
             pageLabels.append({
                 "page": p,
                 "name": p,
-                "cur": cur
+                "cur":cur
             })
 
     if page + 1 <= page_num:
@@ -84,19 +84,19 @@ def GenImageFileName(prefix='', suffix=''):
     r = "%d%d" % (random.randint(1000, 9999), random.randint(1000, 9999))
     return prefix+r+suffix
 
-def gen_random_code_s(prefix):
+def gen_control_code():
     """
-    产生随机编号（服务于数据表的的编号）
-    :param prefix: 编码前缀
+    产生随机布控编号
     :return:
     """
+    prefix = "c"
     val = str(uuid.uuid5(uuid.uuid1(), str(uuid.uuid1())))
     a = val.split("-")[0]
     code = "%s%s%d" % (prefix,a, random.randint(10000, 99999))
 
     return code
 
-def gen_random_code(prefix):
+def gen_random_code(prefix=""):
     """
     产生永远不重复的随机数
     :param prefix: 编码前缀

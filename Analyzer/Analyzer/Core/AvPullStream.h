@@ -9,12 +9,13 @@ extern "C" {
 #include "libavformat/avformat.h"
 }
 namespace AVSAnalyzer {
-	class Worker;
+	class Config;
+	struct Control;
 
 	class AvPullStream
 	{
 	public:
-		AvPullStream(Worker* worker);
+		AvPullStream(Config* config, Control* control);
 		~AvPullStream();
 
 	public:
@@ -34,9 +35,9 @@ namespace AVSAnalyzer {
 
 	public:
 		static void readThread(void* arg); // 拉流媒体流
-		void handleRead();
 	private:
-		Worker* mWorker;
+		Config* mConfig;
+		Control* mControl;
 
 		bool pushVideoPkt(const AVPacket& pkt);
 		void clearVideoPktQueue();

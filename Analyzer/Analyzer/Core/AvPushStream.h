@@ -7,13 +7,14 @@ extern "C" {
 #include "libavformat/avformat.h"
 }
 namespace AVSAnalyzer {
-	class Worker;
-	struct Frame;
+	class Config;
+	struct Control;
+	struct VideoFrame;
 
 	class AvPushStream
 	{
 	public:
-		AvPushStream(Worker* worker);
+		AvPushStream(Config* config, Control* control);
 		~AvPushStream();
 	public:
 		bool connect();     // 连接流媒体服务
@@ -27,21 +28,20 @@ namespace AVSAnalyzer {
 		AVCodecContext* mVideoCodecCtx = NULL;
 		AVStream* mVideoStream = NULL;
 		int mVideoIndex = -1;
-		void addVideoFrame(Frame* frame);
-		int getVideoFrameQSize();
+		void pushVideoFrame(unsigned char* data, int size);
 
 
 	public:
-		static void encodeVideoThread(void* arg); // 编码视频帧并推流
-		void handleEncodeVideo();
+		static void encodeVideoAndWriteStreamThread(void* arg); // 编码视频帧并推流
 
 	private:
-		Worker* mWorker;
+		Config* mConfig;
+		Control* mControl;
 
 		//视频帧
-		std::queue <Frame*> mVideoFrameQ;
-		std::mutex          mVideoFrameQ_mtx;
-		bool getVideoFrame(Frame*& frame);
+		std::queue <VideoFrame*> mVideoFrameQ;
+		std::mutex               mVideoFrameQ_mtx;
+		bool getVideoFrame(VideoFrame*& frame, int& frameQSize);// 获取的frame，需要pushReusedVideoFrame
 		void clearVideoFrameQueue();
 
 		// bgr24转yuv420p

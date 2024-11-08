@@ -1,52 +1,27 @@
 from django.db import models
 from django.utils import timezone
 
-class Alarm(models.Model):
+
+class Notification(models.Model):
     sort = models.IntegerField(verbose_name='排序')
-    control_code = models.CharField(max_length=50, verbose_name='布控编号')
-    desc = models.CharField(max_length=100, verbose_name='描述')
-    video_path = models.CharField(max_length=200, verbose_name='视频存储路径')
-    image_path = models.CharField(max_length=200, verbose_name='主图存储路径')
+    title = models.CharField(max_length=100, verbose_name='标题')
+    content = models.CharField(max_length=200, verbose_name='内容')
+
     create_time = models.DateTimeField(auto_now_add=True,verbose_name='创建时间')
+    last_update_time = models.DateTimeField(auto_now_add=True,verbose_name='更新时间')
+
     state = models.IntegerField(verbose_name='状态') # 0 未读
 
     def __repr__(self):
-        return self.desc
+        return self.title
 
     def __str__(self):
-        return self.desc
+        return self.title
 
     class Meta:
-        db_table = 'av_alarm'
-        verbose_name = '报警视频'
-        verbose_name_plural = '报警视频'
-
-class Stream(models.Model):
-    user_id = models.IntegerField(verbose_name='用户')
-    sort = models.IntegerField(verbose_name='排序')
-    code = models.CharField(max_length=50, verbose_name='编号')
-    app = models.CharField(max_length=50, verbose_name='分组')
-    name = models.CharField(max_length=50, verbose_name='名称')
-    pull_stream_url = models.CharField(max_length=300, verbose_name='视频流来源')
-    pull_stream_type = models.IntegerField(verbose_name='视频流来源类型')
-    nickname = models.CharField(max_length=200, verbose_name='视频流昵称')
-    remark = models.CharField(max_length=200, verbose_name='备注')
-    forward_state = models.IntegerField(verbose_name='转发状态')  # 默认0, 0:未转发 1:转发中
-    create_time = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
-    last_update_time = models.DateTimeField(auto_now_add=True, verbose_name='更新时间')
-    state = models.IntegerField(verbose_name='状态')
-
-    def __repr__(self):
-        return self.name
-
-    def __str__(self):
-        return self.name
-
-    class Meta:
-        db_table = 'av_stream'
-        verbose_name = '视频流'
-        verbose_name_plural = '视频流'
-
+        db_table = 'av_notification'
+        verbose_name = '通知'
+        verbose_name_plural = '通知'
 
 
 class Control(models.Model):
@@ -59,12 +34,10 @@ class Control(models.Model):
     stream_video = models.CharField(max_length=100, verbose_name='视频流视频')
     stream_audio = models.CharField(max_length=100, verbose_name='视频流音频')
 
-    algorithm_code = models.CharField(max_length=50, verbose_name='算法编号')
-    object_code = models.CharField(max_length=50, verbose_name='目标编号')
-    polygon = models.CharField(max_length=50, verbose_name='绘制区域坐标点') # x1,y1,x2,y2,x3,y3,x4,y4
-    min_interval = models.IntegerField(verbose_name='检测间隔(秒)')
-    class_thresh = models.FloatField(verbose_name='分类阈值')
-    overlap_thresh = models.FloatField(verbose_name='iou阈值')
+    behavior_code = models.CharField(max_length=50, verbose_name='算法行为编号')
+    interval = models.IntegerField(verbose_name='检测间隔')
+    sensitivity = models.IntegerField(verbose_name='灵敏度')
+    overlap_thresh = models.IntegerField(verbose_name='阈值')
     remark = models.CharField(max_length=200, verbose_name='备注')
 
     push_stream = models.BooleanField(verbose_name='是否推流')
@@ -86,3 +59,25 @@ class Control(models.Model):
         db_table = 'av_control'
         verbose_name = '布控'
         verbose_name_plural = '布控'
+
+class Camera(models.Model):
+    sort = models.IntegerField(verbose_name='排序')
+    code = models.CharField(max_length=50, verbose_name='摄像头编号')
+    name = models.CharField(max_length=100, verbose_name='摄像头名称')
+    stream_name = models.CharField(max_length=200,verbose_name='视频流名称')
+    stream_state = models.BooleanField(verbose_name='视频流状态')
+    state = models.BooleanField(verbose_name='状态')
+    remark = models.CharField(max_length=200, null=True, verbose_name='备注')
+    create_time = models.DateTimeField(auto_now_add=True,verbose_name='创建时间')
+    last_update_time = models.DateTimeField(auto_now_add=True,verbose_name='更新时间')
+
+    def __repr__(self):
+        return self.name
+
+    def __str__(self):
+        return self.name
+
+    class Meta:
+        db_table = 'av_camera'
+        verbose_name = '摄像头'
+        verbose_name_plural = '摄像头'

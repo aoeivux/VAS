@@ -83,7 +83,7 @@ namespace AVSAnalyzer {
 
         if (curl) {
             struct curl_slist* headers = nullptr;
-            headers = curl_slist_append(headers, "User-Agent: Analyzer;");
+            headers = curl_slist_append(headers, "User-Agent: AnalyVideo;");
             headers = curl_slist_append(headers, "Content-Type:application/json;");
             headers = curl_slist_append(headers,
                 "expect: ;");// libcurl请求慢解决方法 https://blog.csdn.net/feng964497595/article/details/86316861

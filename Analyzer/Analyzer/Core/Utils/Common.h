@@ -27,16 +27,7 @@ namespace AVSAnalyzer {
             count();
 
     }
-    static std::string getCurFormatTimeStr(const char* format = "%Y-%m-%d %H:%M:%S") {
 
-        time_t t = time(nullptr);
-
-        char tc[64];
-        strftime(tc, sizeof(tc), format, localtime(&t));
-
-        std::string timeStr = tc;
-        return timeStr;
-    }
     static std::vector<std::string> split(const std::string& str, const std::string& sep) {
 
         std::vector<std::string> arr;
@@ -57,6 +48,7 @@ namespace AVSAnalyzer {
         return arr;
     }
 
+
     static bool removeFile(const std::string& filename) {
 
         if (remove(filename.data()) == 0) {
@@ -69,14 +61,14 @@ namespace AVSAnalyzer {
 
     static int getRandomInt() {
         std::string numStr;
-        numStr.append(std::to_string(std::rand() % 9 + 1));
-        numStr.append(std::to_string(std::rand() % 10));
-        numStr.append(std::to_string(std::rand() % 10));
-        numStr.append(std::to_string(std::rand() % 10));
-        numStr.append(std::to_string(std::rand() % 10));
-        numStr.append(std::to_string(std::rand() % 10));
-        numStr.append(std::to_string(std::rand() % 10));
-        numStr.append(std::to_string(std::rand() % 10));
+        numStr.append(std::to_string(rand() % 9 + 1));
+        numStr.append(std::to_string(rand() % 10));
+        numStr.append(std::to_string(rand() % 10));
+        numStr.append(std::to_string(rand() % 10));
+        numStr.append(std::to_string(rand() % 10));
+        numStr.append(std::to_string(rand() % 10));
+        numStr.append(std::to_string(rand() % 10));
+        numStr.append(std::to_string(rand() % 10));
         int num = stoi(numStr);
 
         return num;

@@ -9,33 +9,30 @@
 
 namespace AVSAnalyzer {
 	class Config;
-	class Worker;
-	class Algorithm;
+	class ControlExecutor;
 	struct Control;
-	struct AlarmImage;
-	struct Alarm;
+	struct AVSAlarmImage;
+	struct AVSAlarm;
 
 	class Scheduler
 	{
 	public:
-		friend class Worker;
+		friend class ControlExecutor;
 
 		Scheduler(Config* config);
 		~Scheduler();
 	public:
 		Config* getConfig();
-
-		bool initAlgorithm();
-		Algorithm* gainAlgorithm();
-		void giveBackAlgorithm(Algorithm*);
-
 		void loop();
-
 
 		void setState(bool state);
 		bool getState();
 
-		void addAlarm(Alarm* alarm);
+		void addAlarm(AVSAlarm* alarm);
+
+		AVSAlarmImage* gainAlarmImage();// 从队列池获取一个压缩图片的实例
+		void giveBackAlarmImage(AVSAlarmImage* image);//将一个压缩图片的实例归还到队列池
+		int mAlarmImageInstanceCount = 0;
 
 		// ApiServer 对应的函数 start
 		int  apiControls(std::vector<Control*>& controls);
@@ -46,33 +43,33 @@ namespace AVSAnalyzer {
 
 	private:
 		Config* mConfig;
-		Algorithm* mAlgorithm;
-		std::mutex mAlgorithm_mtx;
-
 
 		bool  mState;
 
-		std::map<std::string, Worker*> mWorkerMap; // <control.code,Worker*>
-		std::mutex                     mWorkerMapMtx;
-		int  getWorkerSize();
+		std::map<std::string, ControlExecutor*> mExecutorMap; // <control.code,ControlExecutor*>
+		std::mutex                              mExecutorMapMtx;
+		int  getExecutorMapSize();
 		bool isAdd(Control* control);
-		bool addWorker(Control* control, Worker* worker);
-		bool removeWorker(Control* control);//加入到待实际删除队列
-		Worker* getWorker(Control* control);
+		bool addExecutor(Control* control, ControlExecutor* controlExecutor);
+		bool removeExecutor(Control* control);//加入到待实际删除队列
+		ControlExecutor* getExecutor(Control* control);
 
-		std::queue<Worker*> mTobeDeletedWorkerQ;
-		std::mutex               mTobeDeletedWorkerQ_mtx;
-		std::condition_variable  mTobeDeletedWorkerQ_cv;
-		void handleDeleteWorker();
+		std::queue<ControlExecutor*> mTobeDeletedExecutorQ;
+		std::mutex                   mTobeDeletedExecutorQ_mtx;
+		std::condition_variable      mTobeDeletedExecutorQ_cv;
+		void handleDeleteExecutor();
 
 		//报警处理 start
 		std::thread* mLoopAlarmThread;
 		static void loopAlarmThread(void* arg);
 		void handleLoopAlarm();
-		std::queue<Alarm*> mAlarmQ;
-		std::mutex         mAlarmQ_mtx;
-		bool getAlarm(Alarm*& alarm, int& alarmQSize);
+		std::queue<AVSAlarm*> mAlarmQ;
+		std::mutex            mAlarmQ_mtx;
+		bool getAlarm(AVSAlarm*& alarm, int& alarmQSize);
 		void clearAlarmQueue();
+
+		std::queue<AVSAlarmImage* > mAlarmImageQ;
+		std::mutex                  mAlarmImageQ_mtx;
 
 		//报警处理 end
 

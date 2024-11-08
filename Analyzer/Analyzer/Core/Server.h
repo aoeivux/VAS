@@ -19,6 +19,6 @@ void api_control_add(struct evhttp_request* req, void* arg);
 void api_control_cancel(struct evhttp_request* req, void* arg);
 void parse_get(struct evhttp_request* req, struct evkeyvalq* params);
 void parse_post(struct evhttp_request* req, char* buff);
-
+void api_test(struct evhttp_request* req, void* arg);
 #endif //ANALYZER_SERVER_H
 

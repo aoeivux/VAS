@@ -2,12 +2,12 @@
 #include "Config.h"
 #include "Utils/Log.h"
 #include "Utils/Common.h"
-#include "Scheduler.h"
 #include "Control.h"
-#include "Worker.h"
+#include "ControlExecutor.h"
 namespace AVSAnalyzer {
-    AvPullStream::AvPullStream(Worker* worker) :
-        mWorker(worker)
+    AvPullStream::AvPullStream(Config* config, Control* control) :
+        mConfig(config),
+        mControl(control)
     {
         LOGI("");
     }
@@ -19,39 +19,59 @@ namespace AVSAnalyzer {
         closeConnect();
     }
 
-    // 拉流，将视频信息保存在Worker类的mControl成员变量
     bool AvPullStream::connect() {
 
-        std::string streamUrl = mWorker->mControl->streamUrl; // 推流地址
         mFmtCtx = avformat_alloc_context();
 
         AVDictionary* fmt_options = NULL;
         av_dict_set(&fmt_options, "rtsp_transport", "tcp", 0); //设置rtsp底层网络协议 tcp or udp
-        av_dict_set(&fmt_options, "stimeout", "10000000", 0);   //设置rtsp连接超时（单位 us）1秒=1000000
-        av_dict_set(&fmt_options, "rw_timeout", "1000000", 0); //设置rtmp/http-flv连接超时（单位 us）
-        //av_dict_set(&fmt_options, "timeout", "1000000", 0);//设置udp/http超时（单位 us）
+        av_dict_set(&fmt_options, "stimeout", "3000000", 0);   //设置rtsp连接超时（单位 us）
+        av_dict_set(&fmt_options, "rw_timeout", "3000000", 0); //设置rtmp/http-flv连接超时（单位 us）
+        //av_dict_set(&fmt_options, "timeout", "3000000", 0);//设置udp/http超时（单位 us）
 
-        int ret = avformat_open_input(&mFmtCtx, streamUrl.data(), NULL, &fmt_options);
+        int ret = avformat_open_input(&mFmtCtx, mControl->streamUrl.data(), NULL, &fmt_options);
 
         if (ret != 0) {
-            LOGE("avformat_open_input error: url=%s ", streamUrl.data());
+            LOGE("avformat_open_input error: url=%s ", mControl->streamUrl.data());
             return false;
         }
 
-        
+
         if (avformat_find_stream_info(mFmtCtx, NULL) < 0) {
             LOGE("avformat_find_stream_info error");
             return false;
         }
 
         // video start
-        mWorker->mControl->videoIndex = av_find_best_stream(mFmtCtx, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+        mControl->videoIndex = -1;
+        
+        for (int i = 0; i < mFmtCtx->nb_streams; i++)
+        {
+            if (mFmtCtx->streams[i]->codec->codec_type == AVMEDIA_TYPE_VIDEO)
+            {
+                mControl->videoIndex = i;
+                break;
+            }
+        }
 
+        //mVideoIndex = av_find_best_stream(mFmtCtx, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
 
-        if (mWorker->mControl->videoIndex > -1) {
-            AVCodecParameters* videoCodecPar = mFmtCtx->streams[mWorker->mControl->videoIndex]->codecpar;
+        if (mControl->videoIndex > -1) {
+            AVCodecParameters* videoCodecPar = mFmtCtx->streams[mControl->videoIndex]->codecpar;
 
-            const AVCodec* videoCodec = NULL;
+            AVCodec* videoCodec = NULL;
+            if (mConfig->supportHardwareVideoDecode) {
+                if (AV_CODEC_ID_H264 == videoCodecPar->codec_id) {
+                    if (!videoCodec) {
+                        videoCodec = avcodec_find_decoder_by_name("h264_cuvid");// 英伟达独显
+                        //videoCodec = avcodec_find_decoder_by_name("h264_qsv");// 酷睿核显
+                        if (videoCodec) {
+                            LOGI("avcodec_find_decoder_by_name = h264_cuvid");
+                        }
+                    }
+                }
+            }
+
             if (!videoCodec) {
                 videoCodec = avcodec_find_decoder(videoCodecPar->codec_id);
                 if (!videoCodec) {
@@ -71,31 +91,25 @@ namespace AVSAnalyzer {
             }
             //mVideoCodecCtx->thread_count = 1;
 
-            mVideoStream = mFmtCtx->streams[mWorker->mControl->videoIndex];
+            mVideoStream = mFmtCtx->streams[mControl->videoIndex];
             if (0 == mVideoStream->avg_frame_rate.den) {
 
-                LOGE("videoIndex=%d,videoStream->avg_frame_rate.den = 0", mWorker->mControl->videoIndex);
+                LOGE("videoIndex=%d,videoStream->avg_frame_rate.den = 0", mControl->videoIndex);
 
-                mWorker->mControl->videoFps = 25;
+                mControl->videoFps = 25;
             }
             else {
-                mWorker->mControl->videoFps = mVideoStream->avg_frame_rate.num / mVideoStream->avg_frame_rate.den;
+                mControl->videoFps = mVideoStream->avg_frame_rate.num / mVideoStream->avg_frame_rate.den;
             }
 
 
-            mWorker->mControl->videoWidth = mVideoCodecCtx->width;
-            mWorker->mControl->videoHeight = mVideoCodecCtx->height;
-            mWorker->mControl->videoChannel = 3;
-
-            if (!mWorker->mControl->parseRecognitionRegion()) {
-                LOGE("parseRecognitionRegion() error");
-                return false;
-            
-            }
+            mControl->videoWidth = mVideoCodecCtx->width;
+            mControl->videoHeight = mVideoCodecCtx->height;
+            mControl->videoChannel = 3;
 
         }
         else {
-            LOGE("av_find_best_stream video error videoIndex=%d", mWorker->mControl->videoIndex);
+            LOGE("av_find_best_stream video error videoIndex=%d", mControl->videoIndex);
             return false;
         }
         // video end;
@@ -106,7 +120,7 @@ namespace AVSAnalyzer {
         // audio end
 
 
-        if (mWorker->mControl->videoIndex <= -1) {
+        if (mControl->videoIndex <= -1) {
             return false;
         }
 
@@ -144,7 +158,7 @@ namespace AVSAnalyzer {
             avcodec_close(mVideoCodecCtx);
             avcodec_free_context(&mVideoCodecCtx);
             mVideoCodecCtx = NULL;
-            mWorker->mControl->videoIndex = -1;
+            mControl->videoIndex = -1;
         }
 
         if (mFmtCtx) {
@@ -160,13 +174,11 @@ namespace AVSAnalyzer {
     }
 
     bool AvPullStream::pushVideoPkt(const AVPacket& pkt) {
-        // 使用 av_packet_make_refcounted 将 pkt 转换为引用计数的包。
-        // 这意味着这个数据包将由 AVPacket 的引用计数机制管理，以确保在多个地方使用时不会被意外释放
+
         if (av_packet_make_refcounted((AVPacket*)&pkt) < 0) {
             return false;
         }
 
-        // 以确保在对共享队列 mVideoPktQ 进行操作时不会出现竞争条件
         mVideoPktQ_mtx.lock();
         mVideoPktQ.push(pkt);
         mVideoPktQ_mtx.unlock();
@@ -203,21 +215,20 @@ namespace AVSAnalyzer {
         }
         mVideoPktQ_mtx.unlock();
     }
-    void AvPullStream::handleRead() {
+
+    void AvPullStream::readThread(void* arg) {
+
+        ControlExecutor* executor = (ControlExecutor*)arg;
         int continuity_error_count = 0;
 
         AVPacket pkt;
-        while (mWorker->getState())
-        {   
-            // 从mFmtCtx（即打开的媒体上下文）读取一帧数据并将其存储到 pkt 
-            // pkt 是一个 AVPacket 结构，表示压缩后的一帧视频或音频数据，通常是编码后的数据。
-            // AVFrame 则是解码后的数据，表示一帧的原始像素数据或音频样本。
-            if (av_read_frame(mFmtCtx, &pkt) >= 0) {
+        while (executor->getState())
+        {
+            if (av_read_frame(executor->mPullStream->mFmtCtx, &pkt) >= 0) {
                 continuity_error_count = 0;
 
-                if (pkt.stream_index == mWorker->mControl->videoIndex) {
-                    // 将视频数据包 pkt 存入一个视频数据包队列中
-                    pushVideoPkt(pkt);
+                if (pkt.stream_index == executor->mControl->videoIndex) {
+                    executor->mPullStream->pushVideoPkt(pkt);
                     std::this_thread::sleep_for(std::chrono::milliseconds(30));
                 }
                 else {
@@ -233,13 +244,13 @@ namespace AVSAnalyzer {
 
                     LOGE("av_read_frame error, continuity_error_count = %d (s)", continuity_error_count);
 
-                    if (reConnect()) {
+                    if (executor->mPullStream->reConnect()) {
                         continuity_error_count = 0;
-                        LOGI("reConnect success : mConnectCount=%d", mConnectCount);
+                        LOGI("reConnect success : mConnectCount=%d", executor->mPullStream->mConnectCount);
                     }
                     else {
-                        LOGI("reConnect error : mConnectCount=%d", mConnectCount);
-                        mWorker->remove();
+                        LOGI("reConnect error : mConnectCount=%d", executor->mPullStream->mConnectCount);
+                        executor->setState_remove();
                     }
                 }
                 else {
@@ -248,10 +259,5 @@ namespace AVSAnalyzer {
             }
         }
 
-    }
-    void AvPullStream::readThread(void* arg) {
-
-        AvPullStream* pullStream = (AvPullStream*)arg;
-        pullStream->handleRead();
     }
 }

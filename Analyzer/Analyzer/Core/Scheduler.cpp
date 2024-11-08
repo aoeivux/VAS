@@ -1,10 +1,9 @@
 ﻿#include "Scheduler.h"
 #include "Config.h"
 #include "Control.h"
-#include "Worker.h"
-#include "Algorithm.h"
-#include "AlgorithmOnnxRuntime.h"
-#include "GenerateAlarmVideo.h"
+#include "ControlExecutor.h"
+#include "GenerateAlarm.h"
+#include "GenerateVideo.h"
 #include "Utils/Log.h"
 
 namespace AVSAnalyzer {
@@ -12,16 +11,12 @@ namespace AVSAnalyzer {
         mLoopAlarmThread(nullptr)
     {
         LOGI("");
-
     }
 
     Scheduler::~Scheduler()
     {
         LOGI("");
-        if (mAlgorithm) {
-            delete mAlgorithm;
-            mAlgorithm = nullptr;
-        }
+
         clearAlarmQueue();
         mLoopAlarmThread->join();
         delete mLoopAlarmThread;
@@ -31,77 +26,51 @@ namespace AVSAnalyzer {
     Config* Scheduler::getConfig() {
         return mConfig;
     }
-    bool Scheduler::initAlgorithm() {
-        LOGI("开始初始化算法模型...");
 
-        bool ret = false;
-        mAlgorithm = new AlgorithmOnnxRuntime(mConfig);
-
-        ret = true;
-        LOGI("初始化算法模型成功");
-        return ret;
-    }
-    Algorithm* Scheduler::gainAlgorithm() {
-        Algorithm* algorithm = nullptr;
-
-        if (mAlgorithm_mtx.try_lock()) {
-            if (mAlgorithm) {
-                algorithm = mAlgorithm;
-                mAlgorithm = nullptr;
-            }
-            mAlgorithm_mtx.unlock();
-        }
-
-
-        return algorithm;
-    
-    }
-    void  Scheduler::giveBackAlgorithm(Algorithm* algorithm) {
-        mAlgorithm_mtx.lock();
-        mAlgorithm = algorithm;
-        mAlgorithm_mtx.unlock();
-    }
     void Scheduler::loop() {
 
+        LOGI("Loop Start");
 
         mLoopAlarmThread = new std::thread(Scheduler::loopAlarmThread, this);
         mLoopAlarmThread->native_handle();
-        LOGI("Start Success");
+
         int64_t l = 0;
+
+        // 清除
         while (mState)
         {
             ++l;
-            handleDeleteWorker();
-        
-        }
+            handleDeleteExecutor();
 
+        }
+        LOGI("Loop End");
     }
 
     int Scheduler::apiControls(std::vector<Control*>& controls) {
         int len = 0;
 
-        mWorkerMapMtx.lock();
-        for (auto f = mWorkerMap.begin(); f != mWorkerMap.end(); ++f)
+        mExecutorMapMtx.lock();
+        for (auto f = mExecutorMap.begin(); f != mExecutorMap.end(); ++f)
         {
             ++len;
             controls.push_back(f->second->mControl);
 
         }
-        mWorkerMapMtx.unlock();
+        mExecutorMapMtx.unlock();
 
         return len;
     }
     Control* Scheduler::apiControl(std::string& code) {
         Control* control = nullptr;
-        mWorkerMapMtx.lock();
-        for (auto f = mWorkerMap.begin(); f != mWorkerMap.end(); ++f)
+        mExecutorMapMtx.lock();
+        for (auto f = mExecutorMap.begin(); f != mExecutorMap.end(); ++f)
         {
             if (f->first == code) {
                 control = f->second->mControl;
             }
 
         }
-        mWorkerMapMtx.unlock();
+        mExecutorMapMtx.unlock();
 
         return control;
     }
@@ -115,24 +84,28 @@ namespace AVSAnalyzer {
             return;
         }
 
+        if (getExecutorMapSize() >= mConfig->controlExecutorMaxNum) {
+            result_msg = "the number of control exceeds the limit";
+            result_code = 0;
+        }
         else {
-            Worker* worker = new Worker(this, control);
+            ControlExecutor* executor = new ControlExecutor(this, control);
 
-            if (worker->start(result_msg)) {
-                if (addWorker(control, worker)) {
+            if (executor->start(result_msg)) {
+                if (addExecutor(control, executor)) {
                     result_msg = "add success";
                     result_code = 1000;
                 }
                 else {
-                    delete worker;
-                    worker = nullptr;
+                    delete executor;
+                    executor = nullptr;
                     result_msg = "add error";
                     result_code = 0;
                 }
             }
             else {
-                delete worker;
-                worker = nullptr;
+                delete executor;
+                executor = nullptr;
                 result_code = 0;
             }
         }
@@ -140,19 +113,19 @@ namespace AVSAnalyzer {
     }
     void Scheduler::apiControlCancel(Control* control, int& result_code, std::string& result_msg) {
 
-        Worker* worker = getWorker(control);
+        ControlExecutor* controlExecutor = getExecutor(control);
 
-        if (worker) {
-            if (worker->getState()) {
+        if (controlExecutor) {
+            if (controlExecutor->getState()) {
                 result_msg = "control is running, ";
             }
             else {
                 result_msg = "control is not running, ";
             }
 
-            removeWorker(control);
+            removeExecutor(control);
 
-            result_msg += "cancel success";
+            result_msg += "remove success";
             result_code = 1000;
             return;
 
@@ -171,99 +144,113 @@ namespace AVSAnalyzer {
         return mState;
     }
 
-    int Scheduler::getWorkerSize() {
-        mWorkerMapMtx.lock();
-        int size = mWorkerMap.size();
-        mWorkerMapMtx.unlock();
+    int Scheduler::getExecutorMapSize() {
+        mExecutorMapMtx.lock();
+        int size = mExecutorMap.size();
+        mExecutorMapMtx.unlock();
 
         return size;
     }
     bool Scheduler::isAdd(Control* control) {
 
-        mWorkerMapMtx.lock();
-        bool isAdd = mWorkerMap.end() != mWorkerMap.find(control->code);
-        mWorkerMapMtx.unlock();
+        mExecutorMapMtx.lock();
+        bool isAdd = mExecutorMap.end() != mExecutorMap.find(control->code);
+        mExecutorMapMtx.unlock();
 
         return isAdd;
     }
-    bool Scheduler::addWorker(Control* control, Worker* worker) {
+    bool Scheduler::addExecutor(Control* control, ControlExecutor* controlExecutor) {
         bool add = false;
 
-        mWorkerMapMtx.lock();
-        bool isAdd = mWorkerMap.end() != mWorkerMap.find(control->code);
-        if (!isAdd) {
-            mWorkerMap.insert(std::pair<std::string, Worker* >(control->code, worker));
-            add = true;
+        mExecutorMapMtx.lock();
+        if (mExecutorMap.size() < mConfig->controlExecutorMaxNum) {
+            bool isAdd = mExecutorMap.end() != mExecutorMap.find(control->code);
+            if (!isAdd) {
+                mExecutorMap.insert(std::pair<std::string, ControlExecutor* >(control->code, controlExecutor));
+                add = true;
+            }
         }
-        mWorkerMapMtx.unlock();
+        mExecutorMapMtx.unlock();
         return add;
     }
-    bool Scheduler::removeWorker(Control* control) {
+    bool Scheduler::removeExecutor(Control* control) {
         bool result = false;
 
-        mWorkerMapMtx.lock();
-        auto f = mWorkerMap.find(control->code);
-        if (mWorkerMap.end() != f) {
-            Worker* worker = f->second;
-
-            // 添加到待删除队列start
-            std::unique_lock <std::mutex> lck(mTobeDeletedWorkerQ_mtx);
-            mTobeDeletedWorkerQ.push(worker);
-            //mTobeDeletedWorkerQ_cv.notify_all();
-            mTobeDeletedWorkerQ_cv.notify_one();
-            // 添加到待删除队列end
-
-            result = mWorkerMap.erase(control->code) != 0;
+        mExecutorMapMtx.lock();
+        auto f = mExecutorMap.find(control->code);
+        if (mExecutorMap.end() != f) {
+            ControlExecutor* executor = f->second;
+            // executor 添加到待删除队列start
+            std::unique_lock <std::mutex> lck(mTobeDeletedExecutorQ_mtx);
+            mTobeDeletedExecutorQ.push(executor);
+            //mTobeDeletedExecutorQ_cv.notify_all();
+            mTobeDeletedExecutorQ_cv.notify_one();
+            // executor 添加到待删除队列end
+            result = mExecutorMap.erase(control->code) != 0;
         }
-        mWorkerMapMtx.unlock();
+        mExecutorMapMtx.unlock();
         return result;
     }
-    Worker* Scheduler::getWorker(Control* control) {
-        Worker* worker = nullptr;
+    ControlExecutor* Scheduler::getExecutor(Control* control) {
+        ControlExecutor* executor = nullptr;
 
-        mWorkerMapMtx.lock();
-        auto f = mWorkerMap.find(control->code);
-        if (mWorkerMap.end() != f) {
-            worker = f->second;
+        mExecutorMapMtx.lock();
+        auto f = mExecutorMap.find(control->code);
+        if (mExecutorMap.end() != f) {
+            executor = f->second;
         }
-        mWorkerMapMtx.unlock();
-        return worker;
+        mExecutorMapMtx.unlock();
+        return executor;
     }
 
-    void Scheduler::handleDeleteWorker() {
+    void Scheduler::handleDeleteExecutor() {
 
-        std::unique_lock <std::mutex> lck(mTobeDeletedWorkerQ_mtx);
-        mTobeDeletedWorkerQ_cv.wait(lck);
+        std::unique_lock <std::mutex> lck(mTobeDeletedExecutorQ_mtx);
+        mTobeDeletedExecutorQ_cv.wait(lck);
 
-        while (!mTobeDeletedWorkerQ.empty()) {
-            Worker* worker = mTobeDeletedWorkerQ.front();
-            mTobeDeletedWorkerQ.pop();
+        while (!mTobeDeletedExecutorQ.empty()) {
+            ControlExecutor* executor = mTobeDeletedExecutorQ.front();
+            mTobeDeletedExecutorQ.pop();
 
-            LOGI("code=%s,streamUrl=%s", worker->mControl->code.data(), worker->mControl->streamUrl.data());
+            LOGI("code=%s,streamUrl=%s", executor->mControl->code.data(), executor->mControl->streamUrl.data());
 
 
-            delete worker;
-            worker = nullptr;
+            delete executor;
+            executor = nullptr;
         }
 
     }
     void Scheduler::handleLoopAlarm() {
-
+        AVSAlarm* alarm = nullptr;
         int alarmQSize;
 
+        bool ret = false;
         while (true) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 
-            Alarm* alarm = nullptr;
-            if (getAlarm(alarm, alarmQSize)) {
+            ret = getAlarm(alarm, alarmQSize);
+            if (ret) {
 
-                GenerateAlarmVideo gen(mConfig,alarm);
-                gen.genAlarmVideo();
+                LOGI("发送（1）条报警，剩余待报警=%d,mAlarmImageInstanceCount=%d",
+                    alarmQSize, mAlarmImageInstanceCount);
 
-                // 释放Alarm的图片资源
+                GenerateVideo gen(mConfig,alarm);
+                gen.run();
+
+                //释放Alarm的图片资源
+                for (int i = 0; i < alarm->images.size(); i++)
+                {
+                    AVSAlarmImage* image = alarm->images[i];
+                    if (image) {
+                        giveBackAlarmImage(image);
+                    }
+
+                }
+                alarm->images.clear();
+
                 delete alarm;
                 alarm = nullptr;
             }
-
         }
 
 
@@ -273,21 +260,41 @@ namespace AVSAnalyzer {
         Scheduler* scheduler = (Scheduler*)arg;
         scheduler->handleLoopAlarm();
     }
-    void Scheduler::addAlarm(Alarm* alarm) {
+    void Scheduler::addAlarm(AVSAlarm* alarm) {
         mAlarmQ_mtx.lock();
-        if (mAlarmQ.size() > 0) {
-            //扔掉
-            delete alarm;
-            alarm = nullptr;
-        }
-        else {
-            mAlarmQ.push(alarm);
-        }
-   
+        mAlarmQ.push(alarm);
         mAlarmQ_mtx.unlock();
     }
 
-    bool Scheduler::getAlarm(Alarm*& alarm, int& alarmQSize) {
+
+    AVSAlarmImage* Scheduler::gainAlarmImage() {
+
+        AVSAlarmImage* image = nullptr;
+        mAlarmImageQ_mtx.lock();
+
+        if (mAlarmImageQ.empty()) {
+            mAlarmImageQ_mtx.unlock();
+
+            image = AVSAlarmImage::Create(1920,1080,3);
+
+            mAlarmImageInstanceCount++;
+        }
+        else {
+            image = mAlarmImageQ.front();
+            mAlarmImageQ.pop();
+            mAlarmImageQ_mtx.unlock();
+        }
+
+        return image;
+    }
+    void Scheduler::giveBackAlarmImage(AVSAlarmImage* image) {
+
+        mAlarmImageQ_mtx.lock();
+        mAlarmImageQ.push(image);
+        mAlarmImageQ_mtx.unlock();
+    }
+
+    bool Scheduler::getAlarm(AVSAlarm*& alarm, int& alarmQSize) {
         mAlarmQ_mtx.lock();
 
         if (!mAlarmQ.empty()) {

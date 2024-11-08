@@ -8,27 +8,26 @@ namespace AVSAnalyzer {
 	class Config
 	{
 	public:
-		Config(const char* file);
+		Config(const char* file, const char* ip, short port);
 		~Config();
 	public:
 
 		bool mState = false;
 		void show();
+		//void getAlgorithmHost(std::string &host);
 	public:
 		const char* file = NULL;
+		const char* serverIp = NULL;
+		short serverPort = 0;
+		std::string adminHost{};// 管理后台地址 http://*:9001
+		std::string rootVideoDir{};
+		std::string subVideoDirFormat{};
+		int  controlExecutorMaxNum = 0;// 支持的分析视频最大路数
+		bool supportHardwareVideoDecode = false;
+		bool supportHardwareVideoEncode = false;
 
-		std::string host{};//主机IP地址 192.168.1.4
-		std::string adminHost{};//后台管理服务地址 http://192.168.1.4:9001
-		int adminPort;// 后台管理服务端口 9001
-		int analyzerPort;// 分析服务端口 9002
-		int mediaHttpPort;// 80
-		int mediaRtspPort;// 554
+		std::vector<std::string> algorithmApiHosts;// 算法服务地址数组
 
-		std::string uploadDir{};
-		std::string videoFileNameFormat{};
-
-		std::string algorithmApiUrl{};//算法api服务器url
-		std::string onnxModelPath{};// onnx模型路径
 
 	};
 }

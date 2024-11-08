@@ -3,8 +3,7 @@
 #include "Utils/Log.h"
 #include "Utils/Common.h"
 #include "Control.h"
-#include "Frame.h"
-#include "Worker.h"
+#include "ControlExecutor.h"
 #include "Analyzer.h"
 extern "C" {
 #include "libswscale/swscale.h"
@@ -14,8 +13,9 @@ extern "C" {
 #pragma warning(disable: 4996)
 
 namespace AVSAnalyzer {
-    AvPushStream::AvPushStream(Worker* worker) :
-        mWorker(worker)
+    AvPushStream::AvPushStream(Config* config, Control* control) :
+        mConfig(config),
+        mControl(control)
     {
         LOGI("");
     }
@@ -30,26 +30,21 @@ namespace AVSAnalyzer {
 
     bool AvPushStream::connect() {
 
-        // 编码
-        std::string pushStreamUrl = mWorker->mControl->pushStreamUrl;
-        int videoWidth = mWorker->mControl->videoWidth;
-        int videoHeight = mWorker->mControl->videoHeight;
-        int videoFps = mWorker->mControl->videoFps;
 
-        if (avformat_alloc_output_context2(&mFmtCtx, NULL, "rtsp", pushStreamUrl.data()) < 0) {
-            LOGI("avformat_alloc_output_context2 error: pushStreamUrl=%s", pushStreamUrl.data());
+        if (avformat_alloc_output_context2(&mFmtCtx, NULL, "rtsp", mControl->pushStreamUrl.data()) < 0) {
+            LOGI("avformat_alloc_output_context2 error: pushStreamUrl=%s", mControl->pushStreamUrl.data());
             return false;
         }
 
         // init video start
-        const AVCodec* videoCodec = avcodec_find_encoder(AV_CODEC_ID_H264);
+        AVCodec* videoCodec = avcodec_find_encoder(AV_CODEC_ID_H264);
         if (!videoCodec) {
-            LOGI("avcodec_find_encoder error: pushStreamUrl=%s", pushStreamUrl.data());
+            LOGI("avcodec_find_encoder error: pushStreamUrl=%s", mControl->pushStreamUrl.data());
             return false;
         }
         mVideoCodecCtx = avcodec_alloc_context3(videoCodec);
         if (!mVideoCodecCtx) {
-            LOGI("avcodec_alloc_context3 error: pushStreamUrl=%s", pushStreamUrl.data());
+            LOGI("avcodec_alloc_context3 error: pushStreamUrl=%s", mControl->pushStreamUrl.data());
             return false;
         }
         //int bit_rate = 300 * 1024 * 8;  //压缩后每秒视频的bit位大小 300kB
@@ -73,9 +68,9 @@ namespace AVSAnalyzer {
         mVideoCodecCtx->codec_id = videoCodec->id;
         mVideoCodecCtx->pix_fmt = AV_PIX_FMT_YUVJ420P;// 不支持AV_PIX_FMT_BGR24直接进行编码
         mVideoCodecCtx->codec_type = AVMEDIA_TYPE_VIDEO;
-        mVideoCodecCtx->width = videoWidth;
-        mVideoCodecCtx->height = videoHeight;
-        mVideoCodecCtx->time_base = { 1,videoFps };
+        mVideoCodecCtx->width = mControl->videoWidth;
+        mVideoCodecCtx->height = mControl->videoHeight;
+        mVideoCodecCtx->time_base = { 1,mControl->videoFps };
         //        mDstVideoCodecCtx->framerate = { mDstVideoFps, 1 };
         mVideoCodecCtx->gop_size = 5;
         mVideoCodecCtx->max_b_frames = 0;
@@ -95,12 +90,12 @@ namespace AVSAnalyzer {
             av_dict_set(&video_codec_options, "tune", "zero-latency", 0);
         }
         if (avcodec_open2(mVideoCodecCtx, videoCodec, &video_codec_options) < 0) {
-            LOGI("avcodec_open2 error: pushStreamUrl=%s", pushStreamUrl.data());
+            LOGI("avcodec_open2 error: pushStreamUrl=%s", mControl->pushStreamUrl.data());
             return false;
         }
         mVideoStream = avformat_new_stream(mFmtCtx, videoCodec);
         if (!mVideoStream) {
-            LOGI("avformat_new_stream error: pushStreamUrl=%s", pushStreamUrl.data());
+            LOGI("avformat_new_stream error: pushStreamUrl=%s", mControl->pushStreamUrl.data());
             return false;
         }
         mVideoStream->id = mFmtCtx->nb_streams - 1;
@@ -109,12 +104,12 @@ namespace AVSAnalyzer {
         mVideoIndex = mVideoStream->id;
         // init video end
 
-        av_dump_format(mFmtCtx, 0, pushStreamUrl.data(), 1);
+        av_dump_format(mFmtCtx, 0, mControl->pushStreamUrl.data(), 1);
 
         // open output url
         if (!(mFmtCtx->oformat->flags & AVFMT_NOFILE)) {
-            if (avio_open(&mFmtCtx->pb, pushStreamUrl.data(), AVIO_FLAG_WRITE) < 0) {
-                LOGI("avio_open error: pushStreamUrl=%s",pushStreamUrl.data());
+            if (avio_open(&mFmtCtx->pb, mControl->pushStreamUrl.data(), AVIO_FLAG_WRITE) < 0) {
+                LOGI("avio_open error: pushStreamUrl=%s", mControl->pushStreamUrl.data());
                 return false;
             }
         }
@@ -133,7 +128,7 @@ namespace AVSAnalyzer {
         mFmtCtx->video_codec_id = mFmtCtx->oformat->video_codec;
 
         if (avformat_write_header(mFmtCtx, &fmt_options) < 0) { // 调用该函数会将所有stream的time_base，自动设置一个值，通常是1/90000或1/1000，这表示一秒钟表示的时间基长度
-            LOGI("avformat_write_header error: pushStreamUrl=%s", pushStreamUrl.data());
+            LOGI("avformat_write_header error: pushStreamUrl=%s", mControl->pushStreamUrl.data());
             return false;
         }
 
@@ -188,31 +183,31 @@ namespace AVSAnalyzer {
         }
     }
 
-    void AvPushStream::addVideoFrame(Frame* frame) {
+    void AvPushStream::pushVideoFrame(unsigned char* data, int size) {
+
+        VideoFrame* frame = NULL;
+        frame = new VideoFrame(VideoFrame::BGR, size, mControl->videoWidth, mControl->videoHeight);
+        frame->size = size;
+        memcpy(frame->data, data, size);
+
         mVideoFrameQ_mtx.lock();
         mVideoFrameQ.push(frame);
         mVideoFrameQ_mtx.unlock();
     }
-    int AvPushStream::getVideoFrameQSize() {
-        int size = 0;
-        mVideoFrameQ_mtx.lock();
-        size = mVideoFrameQ.size();
-        mVideoFrameQ_mtx.unlock();
-
-        return size;
-    }
-
-    bool AvPushStream::getVideoFrame(Frame*& frame) {
+    bool AvPushStream::getVideoFrame(VideoFrame*& frame, int& frameQSize) {
 
         mVideoFrameQ_mtx.lock();
 
         if (!mVideoFrameQ.empty()) {
             frame = mVideoFrameQ.front();
             mVideoFrameQ.pop();
+            frameQSize = mVideoFrameQ.size();
             mVideoFrameQ_mtx.unlock();
             return true;
+
         }
         else {
+            frameQSize = 0;
             mVideoFrameQ_mtx.unlock();
             return false;
         }
@@ -223,21 +218,25 @@ namespace AVSAnalyzer {
         mVideoFrameQ_mtx.lock();
         while (!mVideoFrameQ.empty())
         {
-            Frame* frame = mVideoFrameQ.front();
+            VideoFrame* frame = mVideoFrameQ.front();
             mVideoFrameQ.pop();
-            mWorker->mVideoFramePool->giveBack(frame);
+            delete frame;
+            frame = NULL;
         }
         mVideoFrameQ_mtx.unlock();
 
     }
-    void AvPushStream::handleEncodeVideo() {
-        int width = mWorker->mControl->videoWidth;
-        int height = mWorker->mControl->videoHeight;
 
-        Frame* videoFrame = NULL; // 未编码的视频帧（bgr格式）
+    void AvPushStream::encodeVideoAndWriteStreamThread(void* arg) {
+        ControlExecutor* executor = (ControlExecutor*)arg;
+        int width = executor->mControl->videoWidth;
+        int height = executor->mControl->videoHeight;
+
+        VideoFrame* videoFrame = NULL; // 未编码的视频帧（bgr格式）
+        int         videoFrameQSize = 0; // 未编码视频帧队列当前长度
 
         AVFrame* frame_yuv420p = av_frame_alloc();
-        frame_yuv420p->format = mVideoCodecCtx->pix_fmt;
+        frame_yuv420p->format = executor->mPushStream->mVideoCodecCtx->pix_fmt;
         frame_yuv420p->width = width;
         frame_yuv420p->height = height;
 
@@ -257,43 +256,44 @@ namespace AVSAnalyzer {
         int64_t t1 = 0;
         int64_t t2 = 0;
         int ret = -1;
-        while (mWorker->getState())
+        while (executor->getState())
         {
-            if (getVideoFrame(videoFrame)) {
+            if (executor->mPushStream->getVideoFrame(videoFrame, videoFrameQSize)) {
 
                 // frame_bgr 转  frame_yuv420p
-                bgr24ToYuv420p(videoFrame->getBuf(), width, height, frame_yuv420p_buff);
-                mWorker->mVideoFramePool->giveBack(videoFrame);
+                executor->mPushStream->bgr24ToYuv420p(videoFrame->data, width, height, frame_yuv420p_buff);
+                delete videoFrame;
+                videoFrame = nullptr;
 
 
                 frame_yuv420p->pts = frame_yuv420p->pkt_dts = av_rescale_q_rnd(frameCount,
-                    mVideoCodecCtx->time_base,
-                    mVideoStream->time_base,
+                    executor->mPushStream->mVideoCodecCtx->time_base,
+                    executor->mPushStream->mVideoStream->time_base,
                     (AVRounding)(AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX));
 
                 frame_yuv420p->pkt_duration = av_rescale_q_rnd(1,
-                    mVideoCodecCtx->time_base,
-                    mVideoStream->time_base,
+                    executor->mPushStream->mVideoCodecCtx->time_base,
+                    executor->mPushStream->mVideoStream->time_base,
                     (AVRounding)(AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX));
 
                 frame_yuv420p->pkt_pos = -1;
 
                 t1 = getCurTime();
-                ret = avcodec_send_frame(mVideoCodecCtx, frame_yuv420p);
+                ret = avcodec_send_frame(executor->mPushStream->mVideoCodecCtx, frame_yuv420p);
                 if (ret >= 0) {
-                    ret = avcodec_receive_packet(mVideoCodecCtx, pkt);
+                    ret = avcodec_receive_packet(executor->mPushStream->mVideoCodecCtx, pkt);
                     if (ret >= 0) {
-                        t2 = getCurTime();
+                        t2 =getCurTime();
                         encodeSuccessCount++;
 
                         //LOGI("encode 1 frame spend：%lld(ms),frameCount=%lld, encodeSuccessCount = %lld, frameQSize=%d,ret=%d", 
                         //    (t2 - t1), frameCount, encodeSuccessCount, frameQSize, ret);
-                        pkt->stream_index = mVideoIndex;
+                        pkt->stream_index = executor->mPushStream->mVideoIndex;
 
                         pkt->pos = -1;
                         pkt->duration = frame_yuv420p->pkt_duration;
 
-                        ret = av_interleaved_write_frame(mFmtCtx, pkt);
+                        ret = av_interleaved_write_frame(executor->mPushStream->mFmtCtx, pkt);
                         if (ret < 0) {
                             LOGE("av_interleaved_write_frame error : ret=%d", ret);
                         }
@@ -315,7 +315,7 @@ namespace AVSAnalyzer {
             }
         }
 
-        //av_write_trailer(mFmtCtx);//写文件尾
+        //av_write_trailer(executor->mPushStream->mFmtCtx);//写文件尾
 
         av_packet_unref(pkt);
         pkt = NULL;
@@ -327,10 +327,8 @@ namespace AVSAnalyzer {
         av_frame_free(&frame_yuv420p);
         //av_frame_unref(frame_yuv420p);
         frame_yuv420p = NULL;
-    }
-    void AvPushStream::encodeVideoThread(void* arg) {
-        AvPushStream* pushStream = (AvPushStream*)arg;
-        pushStream->handleEncodeVideo();
+
+
     }
 
 

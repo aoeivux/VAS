@@ -37,7 +37,7 @@ class DjangoSql:
         try:
             cursor = connection.cursor()
             e = cursor.execute(sql)
-            # print(type(e),e)
+            print(type(e),e)
             ret = True
         except Exception as e:
 
